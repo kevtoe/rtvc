@@ -7,7 +7,7 @@ import SpeechRecognition, { useSpeechRecognition } from 'react-speech-recognitio
 import { FormGroup } from '@blueprintjs/core';
 import { Button, InputGroup, MenuItem, Text } from '@blueprintjs/core/lib/esm/components';
 import { Select2 } from '@blueprintjs/select';
-import { ItemRenderer } from '@blueprintjs/select/lib/esm/common';
+import { ItemRenderer, ItemRendererProps } from '@blueprintjs/select/lib/esm/common';
 
 import { getAudio, getSubscriptionInfo, getVoices } from '../../util/elevenlabs';
 
@@ -17,20 +17,21 @@ import classes from './Body.module.scss';
 
 function renderVoice(
   voice: IVoice,
-  { handleClick, handleFocus, modifiers }: { handleClick: any; handleFocus: any; modifiers: any }
-): ItemRenderer<IVoice> {
+  itemProps: ItemRendererProps
+) {
+  if (!itemProps.modifiers) return null;
+  
   return (
     <MenuItem
-      active={modifiers.active}
-      disabled={modifiers.disabled}
+      active={itemProps.modifiers.active}
+      disabled={itemProps.modifiers.disabled}
       key={voice.voice_id}
-      onClick={handleClick}
-      onFocus={handleFocus}
-      roleStructure='listoption'
+      onClick={itemProps.handleClick}
+      onFocus={itemProps.handleFocus}
       text={voice.name}
       label={voice.category === 'cloned' ? 'Cloned' : 'Default'}
     />
-  ) as any;
+  );
 }
 
 function Body() {
@@ -124,15 +125,16 @@ function Body() {
           <FormGroup label='Select a voice...'>
             <Select2<IVoice>
               items={voices}
-              itemRenderer={renderVoice as any}
+              itemRenderer={(voice, props) => renderVoice(voice, props)}
               filterable={false}
               activeItem={selectedVoice}
               onItemSelect={setSelectedVoice}
+              popoverProps={{ minimal: true }}
             >
               <Button
                 text={selectedVoice?.name || 'Select a voice...'}
                 rightIcon='caret-down'
-                placeholder='Select a voice...'
+                fill={true}
               />
             </Select2>
           </FormGroup>

@@ -24,3 +24,15 @@
   display: flex;
   justify-content: flex-end;
 }
+
+.actionButton {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  
+  .button-content {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+}
