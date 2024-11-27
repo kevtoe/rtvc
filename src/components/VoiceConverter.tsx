@@ -7,6 +7,7 @@ import { IVoice, ISubscription } from '@/types/elevenlabs';
 import { getVoices, getSubscriptionInfo } from '@/util/elevenlabs';
 import styles from './VoiceConverter.module.css';
 import debounce from 'lodash/debounce';
+import { AIAutoResponder } from './AIAutoResponder';
 
 declare global {
   interface Window {
@@ -60,6 +61,9 @@ export function VoiceConverter() {
   const MAX_RECONNECT_ATTEMPTS = 5;
   const [isProcessing, setIsProcessing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [autoResponderMode, setAutoResponderMode] = useState(false);
+  const currentAudioContextRef = useRef<AudioContext | null>(null);
+  const currentAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
   const models: Model[] = [
     {
@@ -150,17 +154,20 @@ export function VoiceConverter() {
 
       const arrayBuffer = await response.arrayBuffer();
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      currentAudioContextRef.current = audioContext;
       const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
       
       const source = audioContext.createBufferSource();
+      currentAudioSourceRef.current = source;
       source.buffer = audioBuffer;
       source.connect(audioContext.destination);
       source.start(0);
       
       source.onended = () => {
         audioContext.close();
+        currentAudioContextRef.current = null;
+        currentAudioSourceRef.current = null;
         setIsProcessing(false);
-        // Optionally toggle dictation back on after processing
         toggleDictation();
       };
 
@@ -173,7 +180,6 @@ export function VoiceConverter() {
     } catch (error) {
       console.error('Error converting text to speech:', error);
       setIsProcessing(false);
-      // Toggle dictation back on in case of error
       toggleDictation();
     }
   }, [selectedVoice, apiKey, selectedModel, stability, similarityBoost, useStyle, useSpeakerBoost, toggleDictation]);
@@ -208,6 +214,24 @@ export function VoiceConverter() {
     }
   }, [isListening]);
 
+  const stopAllAudio = useCallback(() => {
+    // Stop any playing audio
+    if (currentAudioSourceRef.current) {
+      try {
+        currentAudioSourceRef.current.stop();
+      } catch (e) {
+        console.log('Audio already stopped');
+      }
+    }
+    // Close audio context
+    if (currentAudioContextRef.current) {
+      currentAudioContextRef.current.close();
+    }
+    // Clear refs
+    currentAudioSourceRef.current = null;
+    currentAudioContextRef.current = null;
+  }, []);
+
   const stopConversion = useCallback(() => {
     setIsListening(false);
     setIsRecording(false);
@@ -220,7 +244,8 @@ export function VoiceConverter() {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
     }
-  }, []);
+    stopAllAudio();
+  }, [stopAllAudio]);
 
   const handleRecognitionError = useCallback((error: any) => {
     console.error('Recognition error:', error);
@@ -381,260 +406,307 @@ export function VoiceConverter() {
 
   useEffect(() => {
     return () => {
+      stopAllAudio();
       stopConversion();
     };
-  }, [stopConversion]);
+  }, [stopAllAudio, stopConversion]);
+
+  // Add this handler for AI-generated responses
+  const handleAIResponse = useCallback((responseText: string) => {
+    if (textareaRef.current) {
+      textareaRef.current.value = responseText;
+      setManualText(responseText);
+      handleManualSubmit();
+    }
+  }, [handleManualSubmit]);
+
+  // Modify autoResponderMode handling
+  const toggleAutoResponder = useCallback(() => {
+    const newMode = !autoResponderMode;
+    setAutoResponderMode(newMode);
+    
+    if (newMode) {
+      startConversion();
+    } else {
+      stopConversion();
+      stopAllAudio(); // Explicitly stop any playing audio
+    }
+  }, [autoResponderMode, startConversion, stopConversion, stopAllAudio]);
 
   return (
     <div className={styles.root}>
-      <div className={styles.content}>
-        <FormGroup label="API Key">
-          <input
-            type="text"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            className={styles.input}
-            placeholder="Enter your API key"
-          />
-        </FormGroup>
+      <FormGroup label="API Key">
+        <input
+          type="text"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          className={styles.input}
+          placeholder="Enter your API key"
+        />
+      </FormGroup>
 
-        <FormGroup label="Voice">
+      <FormGroup label="Voice">
+        <select
+          value={selectedVoice}
+          onChange={(e) => setSelectedVoice(e.target.value)}
+          className={styles.select}
+          disabled={!apiKey}
+        >
+          <option value="">Select a voice</option>
+          {voices.map((voice) => (
+            <option key={voice.voice_id} value={voice.voice_id}>
+              {voice.name}
+            </option>
+          ))}
+        </select>
+      </FormGroup>
+
+      <FormGroup label="Select Model">
+        <div className={styles.modelSelection}>
           <select
-            value={selectedVoice}
-            onChange={(e) => setSelectedVoice(e.target.value)}
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
             className={styles.select}
             disabled={!apiKey}
           >
-            <option value="">Select a voice</option>
-            {voices.map((voice) => (
-              <option key={voice.voice_id} value={voice.voice_id}>
-                {voice.name}
+            {models.map((model) => (
+              <option key={model.model_id} value={model.model_id}>
+                {model.name}
               </option>
             ))}
           </select>
-        </FormGroup>
-
-        <FormGroup label="Select Model">
-          <div className={styles.modelSelection}>
-            <select
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              className={styles.select}
-              disabled={!apiKey}
-            >
-              {models.map((model) => (
-                <option key={model.model_id} value={model.model_id}>
-                  {model.name}
-                </option>
-              ))}
-            </select>
-            <div className={styles.modelDescription}>
-              {models.find(m => m.model_id === selectedModel)?.description}
-            </div>
-            <div className={styles.languageSupport}>
-              Supported Languages: {models.find(m => m.model_id === selectedModel)?.languages.length}
-            </div>
+          <div className={styles.modelDescription}>
+            {models.find(m => m.model_id === selectedModel)?.description}
           </div>
-        </FormGroup>
+          <div className={styles.languageSupport}>
+            Supported Languages: {models.find(m => m.model_id === selectedModel)?.languages.length}
+          </div>
+        </div>
+      </FormGroup>
 
-        <button
-          onClick={isRecording ? stopConversion : startConversion}
-          disabled={!apiKey || !selectedVoice}
-          className={styles.button}
-        >
-          {isRecording ? 'Stop' : 'Start'}
-        </button>
+      <button
+        onClick={isRecording ? stopConversion : startConversion}
+        disabled={!apiKey || !selectedVoice}
+        className={styles.button}
+      >
+        {isRecording ? 'Stop' : 'Start'}
+      </button>
 
-        <FormGroup label={`Transcript (${transcript.length}/5000)`}>
+      <FormGroup label={`Transcript (${transcript.length}/5000)`}>
+        <textarea
+          value={transcript}
+          readOnly
+          className={styles.textarea}
+          placeholder="Your speech will appear here..."
+        />
+      </FormGroup>
+
+      <FormGroup label="Manual Text Input">
+        <div className={styles.manualInputContainer}>
           <textarea
-            value={transcript}
-            readOnly
+            ref={textareaRef}
+            value={manualText}
+            onChange={(e) => setManualText(e.target.value)}
             className={styles.textarea}
-            placeholder="Your speech will appear here..."
+            placeholder="Type or use dictation here... (⌥⌘D to toggle dictation)"
+            disabled={!apiKey || !selectedVoice || isProcessing}
           />
-        </FormGroup>
-
-        <FormGroup label="Manual Text Input">
-          <div className={styles.manualInputContainer}>
-            <textarea
-              ref={textareaRef}
-              value={manualText}
-              onChange={(e) => setManualText(e.target.value)}
-              className={styles.textarea}
-              placeholder="Type or use dictation here... (⌥⌘D to toggle dictation)"
-              disabled={!apiKey || !selectedVoice || isProcessing}
-            />
-            <div className={styles.manualControls}>
-              <button
-                onClick={handleManualSubmit}
-                disabled={!selectedVoice || !apiKey || isProcessing}
-                className={styles.sendButton}
-              >
-                {isProcessing ? 'Converting...' : 'Send'}
-              </button>
+          <div className={styles.manualControls}>
+            <button
+              onClick={handleManualSubmit}
+              disabled={!selectedVoice || !apiKey || isProcessing}
+              className={styles.sendButton}
+            >
+              {isProcessing ? 'Converting...' : 'Send'}
+            </button>
+          </div>
+          {isProcessing && (
+            <div className={styles.processingIndicator}>
+              Converting text to speech...
             </div>
-            {isProcessing && (
-              <div className={styles.processingIndicator}>
-                Converting text to speech...
-              </div>
-            )}
+          )}
+        </div>
+      </FormGroup>
+
+      <div className={styles.controls}>
+        <FormGroup label="Response Speed (ms)">
+          <div className={styles.sliderContainer}>
+            <input
+              type="range"
+              min="50"
+              max="1000"
+              value={debounceDelay}
+              onChange={(e) => setDebounceDelay(Number(e.target.value))}
+              className={styles.slider}
+            />
+            <span className={styles.sliderValue}>{debounceDelay}ms</span>
           </div>
         </FormGroup>
 
-        <div className={styles.controls}>
-          <FormGroup label="Response Speed (ms)">
-            <div className={styles.sliderContainer}>
-              <input
-                type="range"
-                min="50"
-                max="1000"
-                value={debounceDelay}
-                onChange={(e) => setDebounceDelay(Number(e.target.value))}
-                className={styles.slider}
-              />
-              <span className={styles.sliderValue}>{debounceDelay}ms</span>
-            </div>
-          </FormGroup>
+        <FormGroup label="Pause Detection (ms)">
+          <div className={styles.sliderContainer}>
+            <input
+              type="range"
+              min="500"
+              max="5000"
+              step="100"
+              value={pauseThreshold}
+              onChange={(e) => setPauseThreshold(Number(e.target.value))}
+              className={styles.slider}
+            />
+            <span className={styles.sliderValue}>{pauseThreshold}ms</span>
+          </div>
+        </FormGroup>
 
-          <FormGroup label="Pause Detection (ms)">
-            <div className={styles.sliderContainer}>
-              <input
-                type="range"
-                min="500"
-                max="5000"
-                step="100"
-                value={pauseThreshold}
-                onChange={(e) => setPauseThreshold(Number(e.target.value))}
-                className={styles.slider}
-              />
-              <span className={styles.sliderValue}>{pauseThreshold}ms</span>
-            </div>
-          </FormGroup>
+        <FormGroup label="Voice Detection Speed">
+          <div className={styles.sliderContainer}>
+            <input
+              type="range"
+              min="0.1"
+              max="0.9"
+              step="0.1"
+              value={confidenceThreshold}
+              onChange={(e) => setConfidenceThreshold(Number(e.target.value))}
+              className={styles.slider}
+            />
+            <span className={styles.sliderValue}>
+              {(confidenceThreshold * 100).toFixed(0)}%
+            </span>
+          </div>
+          <div className={styles.hint}>
+            Lower = Faster but less accurate, Higher = Slower but more accurate
+          </div>
+        </FormGroup>
 
-          <FormGroup label="Voice Detection Speed">
+        <FormGroup label="Recognition Alternatives">
+          <div className={styles.sliderContainer}>
+            <input
+              type="range"
+              min="1"
+              max="5"
+              step="1"
+              value={maxAlternatives}
+              onChange={(e) => setMaxAlternatives(Number(e.target.value))}
+              className={styles.slider}
+            />
+            <span className={styles.sliderValue}>{maxAlternatives}</span>
+          </div>
+          <div className={styles.hint}>
+            More alternatives may improve accuracy but increase latency
+          </div>
+        </FormGroup>
+
+        <FormGroup label="Buffer Size">
+          <div className={styles.sliderContainer}>
+            <input
+              type="range"
+              min="1024"
+              max="8192"
+              step="1024"
+              value={bufferSize}
+              onChange={(e) => setBufferSize(Number(e.target.value))}
+              className={styles.slider}
+            />
+            <span className={styles.sliderValue}>{bufferSize}</span>
+          </div>
+          <div className={styles.hint}>
+            Smaller buffer = faster but may be choppy
+          </div>
+        </FormGroup>
+      </div>
+
+      <div className={styles.voiceSettings}>
+        <FormGroup label="Voice Settings">
+          <div className={styles.settingSlider}>
+            <label>Stability (Lower = More Variable)</label>
             <div className={styles.sliderContainer}>
               <input
                 type="range"
-                min="0.1"
-                max="0.9"
-                step="0.1"
-                value={confidenceThreshold}
-                onChange={(e) => setConfidenceThreshold(Number(e.target.value))}
+                min="0"
+                max="1"
+                step="0.05"
+                value={stability}
+                onChange={(e) => setStability(Number(e.target.value))}
                 className={styles.slider}
               />
               <span className={styles.sliderValue}>
-                {(confidenceThreshold * 100).toFixed(0)}%
+                {(stability * 100).toFixed(0)}%
               </span>
             </div>
-            <div className={styles.hint}>
-              Lower = Faster but less accurate, Higher = Slower but more accurate
-            </div>
-          </FormGroup>
+          </div>
 
-          <FormGroup label="Recognition Alternatives">
+          <div className={styles.settingSlider}>
+            <label>Clarity + Similarity Enhancement</label>
             <div className={styles.sliderContainer}>
               <input
                 type="range"
-                min="1"
-                max="5"
-                step="1"
-                value={maxAlternatives}
-                onChange={(e) => setMaxAlternatives(Number(e.target.value))}
+                min="0"
+                max="1"
+                step="0.05"
+                value={similarityBoost}
+                onChange={(e) => setSimilarityBoost(Number(e.target.value))}
                 className={styles.slider}
               />
-              <span className={styles.sliderValue}>{maxAlternatives}</span>
+              <span className={styles.sliderValue}>
+                {(similarityBoost * 100).toFixed(0)}%
+              </span>
             </div>
-            <div className={styles.hint}>
-              More alternatives may improve accuracy but increase latency
-            </div>
-          </FormGroup>
+          </div>
 
-          <FormGroup label="Buffer Size">
+          <div className={styles.settingSlider}>
+            <label>Style (0-1)</label>
             <div className={styles.sliderContainer}>
               <input
                 type="range"
-                min="1024"
-                max="8192"
-                step="1024"
-                value={bufferSize}
-                onChange={(e) => setBufferSize(Number(e.target.value))}
+                min="0"
+                max="1"
+                step="0.1"
+                value={useStyle}
+                onChange={(e) => setUseStyle(Number(e.target.value))}
                 className={styles.slider}
               />
-              <span className={styles.sliderValue}>{bufferSize}</span>
+              <span className={styles.sliderValue}>{useStyle}</span>
             </div>
-            <div className={styles.hint}>
-              Smaller buffer = faster but may be choppy
-            </div>
-          </FormGroup>
-        </div>
+          </div>
 
-        <div className={styles.voiceSettings}>
-          <FormGroup label="Voice Settings">
-            <div className={styles.settingSlider}>
-              <label>Stability (Lower = More Variable)</label>
-              <div className={styles.sliderContainer}>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={stability}
-                  onChange={(e) => setStability(Number(e.target.value))}
-                  className={styles.slider}
-                />
-                <span className={styles.sliderValue}>
-                  {(stability * 100).toFixed(0)}%
-                </span>
-              </div>
-            </div>
-
-            <div className={styles.settingSlider}>
-              <label>Clarity + Similarity Enhancement</label>
-              <div className={styles.sliderContainer}>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={similarityBoost}
-                  onChange={(e) => setSimilarityBoost(Number(e.target.value))}
-                  className={styles.slider}
-                />
-                <span className={styles.sliderValue}>
-                  {(similarityBoost * 100).toFixed(0)}%
-                </span>
-              </div>
-            </div>
-
-            <div className={styles.settingSlider}>
-              <label>Style (0-1)</label>
-              <div className={styles.sliderContainer}>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.1"
-                  value={useStyle}
-                  onChange={(e) => setUseStyle(Number(e.target.value))}
-                  className={styles.slider}
-                />
-                <span className={styles.sliderValue}>{useStyle}</span>
-              </div>
-            </div>
-
-            <div className={styles.settingCheckbox}>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={useSpeakerBoost}
-                  onChange={(e) => setUseSpeakerBoost(e.target.checked)}
-                />
-                Enable Speaker Boost
-              </label>
-            </div>
-          </FormGroup>
-        </div>
+          <div className={styles.settingCheckbox}>
+            <label>
+              <input
+                type="checkbox"
+                checked={useSpeakerBoost}
+                onChange={(e) => setUseSpeakerBoost(e.target.checked)}
+              />
+              Enable Speaker Boost
+            </label>
+          </div>
+        </FormGroup>
       </div>
+
+      <FormGroup label="AI Auto-Responder">
+        <div className={styles.autoResponderControls}>
+          <button
+            onClick={toggleAutoResponder}
+            className={`${styles.button} ${autoResponderMode ? styles.active : ''}`}
+          >
+            {autoResponderMode ? 'Disable Auto-Responder' : 'Enable Auto-Responder'}
+          </button>
+        </div>
+      </FormGroup>
+
+      {autoResponderMode && (
+        <AIAutoResponder
+          onResponseGenerated={handleAIResponse}
+          isListening={isListening}
+          voiceSettings={{
+            selectedVoice,
+            selectedModel,
+            stability,
+            similarityBoost,
+            useStyle,
+            useSpeakerBoost
+          }}
+        />
+      )}
     </div>
   );
 }
